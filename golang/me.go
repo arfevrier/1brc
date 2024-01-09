@@ -4,19 +4,26 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 )
 
 type CityName [64]byte
+type CityValues struct {
+	min int64
+	max int64
+	sum int64
+	len int64
+}
 
 const numWorkers = 8
 const chunkSize = 256 * 1024
 const bufSize = 1024
 
-func worker(chanLine chan []byte, chanTemp chan map[CityName]int64) {
+func worker(chanLine chan []byte, chanTemp chan map[CityName]CityValues) {
 	// Results map
-	cityTemps := make(map[CityName]int64, 512)
+	cityTemps := make(map[CityName]CityValues, 512)
 	for line := range chanLine {
 		// !!!
 		// Still need to implement one more loop to read each chunk line
@@ -36,18 +43,47 @@ func worker(chanLine chan []byte, chanTemp chan map[CityName]int64) {
 		//Move sep to the first number
 		sepI++
 
+		currentCitiesValue, ok := cityTemps[city]
+		var calcValue int64
+		if !ok {
+			currentCitiesValue.min = math.MaxInt64
+			currentCitiesValue.max = math.MinInt64
+		}
 		//If is a two char number
 		if line[sepI+2] == '.' {
-			cityTemps[city] += sign * (int64(line[sepI]-'0')*100 + int64(line[sepI+1]-'0')*10 + int64(line[sepI+3]-'0'))
+			calcValue = sign * (int64(line[sepI]-'0')*100 + int64(line[sepI+1]-'0')*10 + int64(line[sepI+3]-'0'))
+			currentCitiesValue.sum += calcValue
+			currentCitiesValue.len += 1
 		} else {
-			cityTemps[city] += sign * (int64(line[sepI]-'0')*10 + int64(line[sepI+2]-'0'))
+			calcValue = sign * (int64(line[sepI]-'0')*10 + int64(line[sepI+2]-'0'))
+			currentCitiesValue.sum += calcValue
+			currentCitiesValue.len += 1
 		}
-		//fmt.Printf("%s, %d\n", city, cityTemps[city])
+		if currentCitiesValue.min > calcValue {
+			currentCitiesValue.min = calcValue
+		}
+		if currentCitiesValue.max < calcValue {
+			currentCitiesValue.max = calcValue
+		}
+		cityTemps[city] = currentCitiesValue
+		// fmt.Printf("%s, %+v\n", city, cityTemps[city])
 	}
 	chanTemp <- cityTemps
 }
 
 func main() {
+	// f, err := os.Create("trace.out")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// defer f.Close()
+
+	// err = trace.Start(f)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// defer trace.Stop()
+
 	if len(os.Args) < 2 {
 		fmt.Println("Error: First arg should be the measurements.txt file path")
 		return
@@ -68,7 +104,7 @@ func main() {
 	chanLine := make(chan []byte)
 
 	// Result channel
-	chanTemp := make(chan map[CityName]int64)
+	chanTemp := make(chan map[CityName]CityValues)
 
 	// Waitgroup
 	var wg sync.WaitGroup
@@ -82,7 +118,7 @@ func main() {
 		}()
 	}
 
-	final := map[CityName]int64{}
+	final := map[CityName]CityValues{}
 	go func() {
 		for {
 			// Read a chunk of 1024
@@ -105,7 +141,21 @@ func main() {
 		// Read and compile the worker result
 		for result := range chanTemp {
 			for k, v := range result {
-				final[k] += v
+				// Get cities from map
+				currentCitiesValue, ok := final[k]
+				// Set min,max if citie already exist
+				if ok {
+					currentCitiesValue.min = currentCitiesValue.min ^ ((v.min ^ currentCitiesValue.min) & ((v.min - currentCitiesValue.min) >> 63))
+					currentCitiesValue.max = currentCitiesValue.max ^ ((currentCitiesValue.max ^ v.max) & ((currentCitiesValue.max - v.max) >> 63))
+				} else {
+					currentCitiesValue.min = v.min
+					currentCitiesValue.max = v.max
+				}
+				// Add sum, len and min/max
+				currentCitiesValue.sum += v.sum
+				currentCitiesValue.len += v.len
+				//Then, insert back the citie
+				final[k] = currentCitiesValue
 			}
 		}
 	}()
@@ -113,6 +163,6 @@ func main() {
 	close(chanTemp)
 	// Print the result
 	for k, v := range final {
-		fmt.Printf("%s value is %d", k, v)
+		fmt.Printf("{`%s`: %+v},", k, v)
 	}
 }
